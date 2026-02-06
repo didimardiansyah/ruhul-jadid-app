@@ -152,7 +152,7 @@ export default function Pembayaran() {
               <span className="text-sm">
                 {a.persen >= 100
                   ? "✅ Lunas"
-                  : "⏳ Belum Lunas"}
+                  : "⏳ Rung Lunas Cok!"}
               </span>
             </div>
 
