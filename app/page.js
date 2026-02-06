@@ -124,7 +124,7 @@ export default function Home() {
               Flow Kas Kostan
             </p>
             <h1 className="text-4xl md:text-5xl font-semibold mt-2">
-              Kos Ruhul Jadid
+              Kos Ruhul Jadid CUkimaAYYY
             </h1>
             <p className="text-[color:var(--muted)] mt-2 max-w-xl">
               Pantau jadwal piket kamar mandi, kos, dan pembayaran kas sareng-sareng!
