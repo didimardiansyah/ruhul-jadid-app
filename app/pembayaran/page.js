@@ -1,207 +1,264 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
 const TARGET = 65000;
 
+const formatRupiah = (value) =>
+  new Intl.NumberFormat("id-ID", {
+    style: "currency",
+    currency: "IDR",
+    maximumFractionDigits: 0,
+  }).format(value || 0);
+
 export default function Pembayaran() {
   const [anggota, setAnggota] = useState([]);
   const [pembayaran, setPembayaran] = useState([]);
-
   const [anggotaId, setAnggotaId] = useState("");
   const [nominal, setNominal] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
-  // Load anggota
   const loadAnggota = async () => {
-    const { data } = await supabase
-      .from("anggota")
-      .select("*")
-      .order("nama");
-
+    const { data } = await supabase.from("anggota").select("*").order("nama");
     setAnggota(data || []);
   };
 
-  // Load pembayaran
   const loadPembayaran = async () => {
     const { data } = await supabase
       .from("pembayaran")
-      .select(`
-        id,
-        nominal,
-        anggota_id,
-        anggota:anggota_id (id, nama)
-      `);
+      .select(
+        "id, nominal, anggota_id, anggota:anggota_id (id, nama)"
+      )
+      .order("id", { ascending: false });
 
     setPembayaran(data || []);
   };
 
   useEffect(() => {
-    loadAnggota();
-    loadPembayaran();
-    console.log(pembayaran);
+    const load = async () => {
+      setLoading(true);
+      await Promise.all([loadAnggota(), loadPembayaran()]);
+      setLoading(false);
+    };
+    load();
   }, []);
 
-  // Tambah pembayaran
   const tambah = async () => {
-  if (!anggotaId || !nominal) return;
+    setErrorMsg("");
+    const nominalValue = Number(nominal);
+    if (!anggotaId) {
+      setErrorMsg("Pilih anggota terlebih dahulu.");
+      return;
+    }
+    if (!nominalValue || nominalValue <= 0) {
+      setErrorMsg("Nominal harus lebih dari 0.");
+      return;
+    }
 
-  const { error } = await supabase
-    .from("pembayaran")
-    .insert([
+    const selectedAnggota = anggota.find(
+      (item) => Number(item.id) === Number(anggotaId)
+    );
+    if (!selectedAnggota?.nama) {
+      setErrorMsg("Nama anggota tidak ditemukan.");
+      return;
+    }
+
+    setSaving(true);
+    const { error } = await supabase.from("pembayaran").insert([
       {
-        anggota_id: anggotaId,
-        nominal: Number(nominal),
+        anggota_id: Number(anggotaId),
+        nama: selectedAnggota.nama,
+        nominal: nominalValue,
       },
     ]);
 
-  if (!error) {
-    loadPembayaran();
+    if (error) {
+      setErrorMsg(error.message || "Gagal menyimpan pembayaran.");
+      setSaving(false);
+      return;
+    }
+
+    await loadPembayaran();
     setNominal("");
-  }
-};
+    setSaving(false);
+  };
 
-
-  // Hapus
   const hapus = async (id) => {
-    await supabase
-      .from("pembayaran")
-      .delete()
-      .eq("id", id);
-
+    await supabase.from("pembayaran").delete().eq("id", id);
     loadPembayaran();
   };
 
-  // Hitung total per anggota
-  const totalPerOrang = anggota.map((a) => {
-  const bayar = pembayaran
-    .filter(
-      (p) => Number(p.anggota_id) === Number(a.id)
-    )
-    .reduce((sum, p) => sum + Number(p.nominal), 0);
+  const totalPerOrang = useMemo(
+    () =>
+      anggota.map((a) => {
+        const bayar = pembayaran
+          .filter((p) => Number(p.anggota_id) === Number(a.id))
+          .reduce((sum, p) => sum + Number(p.nominal), 0);
 
-  return {
-    ...a,
-    total: bayar,
-    persen: Math.min(
-      Math.round((bayar / TARGET) * 100),
-      100
-    ),
-  };
-});
+        return {
+          ...a,
+          total: bayar,
+          persen: Math.min(Math.round((bayar / TARGET) * 100), 100),
+        };
+      }),
+    [anggota, pembayaran]
+  );
 
+  const totalTerkumpul = pembayaran.reduce(
+    (sum, p) => sum + Number(p.nominal || 0),
+    0
+  );
 
   return (
-    <div className="p-8 max-w-xl mx-auto">
-
-      <h1 className="text-3xl font-bold mb-6 text-center">
-        💰 Pembayaran Kos
-      </h1>
-
-      {/* FORM */}
-      <div className="bg-white p-5 rounded-xl shadow mb-6 space-y-3">
-
-        <select
-          value={anggotaId}
-          onChange={(e) =>
-            setAnggotaId(Number(e.target.value))
-          }
-          className="border p-3 rounded w-full"
-        >
-          <option value="">
-            Pilih Anggota
-          </option>
-
-          {anggota.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.nama}
-            </option>
-          ))}
-        </select>
-
-        <input
-          type="number"
-          placeholder="Nominal"
-          value={nominal}
-          onChange={(e) =>
-            setNominal(e.target.value)
-          }
-          className="border p-3 rounded w-full"
-        />
-
-        <button
-          onClick={tambah}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded w-full"
-        >
-          Tambah Pembayaran
-        </button>
-      </div>
-
-      {/* LIST TOTAL PER ORANG */}
-      <div className="space-y-4">
-        {totalPerOrang.map((a) => (
-          <div
-            key={a.id}
-            className="bg-white p-4 rounded-xl shadow"
-          >
-            <div className="flex justify-between mb-1">
-              <h3 className="font-bold">
-                {a.nama}
-              </h3>
-
-              <span className="text-sm">
-                {a.persen >= 100
-                  ? "✅ Lunas"
-                  : "⏳ Belum Lunas"}
-              </span>
-            </div>
-
-            <p className="text-sm mb-2">
-              Rp {a.total} / 65000
+    <div className="min-h-screen">
+      <div className="max-w-5xl mx-auto px-6 py-10">
+        <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between fade-in-up">
+          <div>
+            <p className="text-sm uppercase tracking-[0.2em] text-[color:var(--muted)]">
+              Pembayaran Kos
             </p>
-
-            {/* Progress Bar */}
-            <div className="w-full bg-gray-200 h-3 rounded">
-              <div
-                style={{
-                  width: `${a.persen}%`,
-                }}
-                className="bg-green-500 h-3 rounded"
-              ></div>
-            </div>
-
-            <p className="text-sm mt-1">
-              {a.persen}%
+            <h1 className="text-3xl md:text-4xl font-semibold mt-2">
+              Catat Iuran Penghuni
+            </h1>
+            <p className="text-[color:var(--muted)] mt-2">
+              Target iuran per orang: {formatRupiah(TARGET)}.
             </p>
           </div>
-        ))}
-      </div>
+          <div className="rounded-2xl bg-[color:var(--surface)] border border-black/5 px-5 py-4 shadow-[0_20px_60px_-40px_rgba(0,0,0,0.45)]">
+            <p className="text-sm text-[color:var(--muted)]">Total terkumpul</p>
+            <p className="text-2xl font-semibold mt-1">
+              {loading ? "Memuat" : formatRupiah(totalTerkumpul)}
+            </p>
+          </div>
+        </header>
 
-      {/* RIWAYAT PEMBAYARAN */}
-      <h2 className="text-xl font-bold mt-8 mb-3">
-        Riwayat
-      </h2>
+        <section className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr] mt-10">
+          <div className="rounded-[28px] bg-[color:var(--surface)] border border-black/5 p-6 shadow-[0_30px_80px_-60px_rgba(0,0,0,0.6)] fade-in-up delay-1">
+            <h2 className="text-xl font-semibold">Tambah Pembayaran</h2>
+            <p className="text-sm text-[color:var(--muted)] mt-2">
+              Simpan transaksi baru agar status iuran selalu terbaru.
+            </p>
 
-      <div className="space-y-2">
-        {pembayaran.map((p) => (
-          <div
-            key={p.id}
-            className="flex justify-between bg-gray-100 p-3 rounded"
-          >
-            <span>
-              {p.anggota?.nama} - Rp {p.nominal}
+            <div className="mt-5 space-y-4">
+              <select
+                value={anggotaId}
+                onChange={(e) => setAnggotaId(e.target.value)}
+                className="w-full rounded-2xl border border-black/10 bg-white/80 px-4 py-3 outline-none focus:border-[color:var(--accent)]"
+              >
+                <option value="">Pilih Anggota</option>
+                {anggota.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.nama}
+                  </option>
+                ))}
+              </select>
+
+              <input
+                type="number"
+                placeholder="Nominal"
+                value={nominal}
+                onChange={(e) => setNominal(e.target.value)}
+                className="w-full rounded-2xl border border-black/10 bg-white/80 px-4 py-3 outline-none focus:border-[color:var(--accent)]"
+              />
+
+              <button
+                onClick={tambah}
+                disabled={saving}
+                className="w-full rounded-2xl bg-[color:var(--accent)] text-white py-3 font-semibold hover:bg-[color:var(--accent-strong)] transition"
+              >
+                {saving ? "Menyimpan..." : "Simpan Pembayaran"}
+              </button>
+              {errorMsg && (
+                <p className="text-sm text-red-600">{errorMsg}</p>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-[28px] bg-white/80 border border-black/5 p-6 shadow-[0_30px_80px_-60px_rgba(0,0,0,0.6)] fade-in-up delay-2">
+            <h2 className="text-xl font-semibold">Status Iuran</h2>
+            <p className="text-sm text-[color:var(--muted)] mt-2">
+              Pantau siapa yang sudah lunas dan yang masih perlu diingatkan.
+            </p>
+
+            <div className="mt-5 grid gap-3">
+              {totalPerOrang.map((a) => (
+                <div
+                  key={a.id}
+                  className="rounded-2xl border border-black/5 bg-[color:var(--surface)] px-4 py-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <p className="font-semibold">{a.nama}</p>
+                    <span
+                      className={`text-xs px-2 py-1 rounded-full ${
+                        a.persen >= 100
+                          ? "bg-emerald-100 text-emerald-700"
+                          : "bg-amber-100 text-amber-700"
+                      }`}
+                    >
+                      {a.persen >= 100 ? "Lunas" : "Belum lunas"}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between text-sm text-[color:var(--muted)]">
+                    <span>{formatRupiah(a.total)}</span>
+                    <span>{a.persen}%</span>
+                  </div>
+                  <div className="mt-2 h-2 rounded-full bg-white/70 overflow-hidden">
+                    <div
+                      className="h-full bg-[color:var(--accent)]"
+                      style={{ width: `${a.persen}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+              {!totalPerOrang.length && (
+                <div className="rounded-2xl border border-dashed border-black/10 px-4 py-6 text-sm text-[color:var(--muted)]">
+                  Belum ada anggota. Tambahkan data penghuni terlebih dahulu.
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="mt-10 rounded-[28px] bg-[color:var(--surface)] border border-black/5 p-6 shadow-[0_30px_80px_-60px_rgba(0,0,0,0.6)] fade-in-up delay-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-semibold">Riwayat Pembayaran</h2>
+            <span className="text-sm text-[color:var(--muted)]">
+              {pembayaran.length} transaksi
             </span>
-
-            <button
-              onClick={() => hapus(p.id)}
-              className="text-red-500"
-            >
-              Hapus
-            </button>
           </div>
-        ))}
-      </div>
 
+          <div className="mt-5 grid gap-3">
+            {pembayaran.map((p) => (
+              <div
+                key={p.id}
+                className="flex items-center justify-between rounded-2xl border border-black/5 bg-white/80 px-4 py-3"
+              >
+                <div>
+                  <p className="font-semibold">{p.anggota?.nama}</p>
+                  <p className="text-xs text-[color:var(--muted)]">Iuran masuk</p>
+                </div>
+                <div className="flex items-center gap-4">
+                  <span className="font-semibold">{formatRupiah(p.nominal)}</span>
+                  <button
+                    onClick={() => hapus(p.id)}
+                    className="text-xs font-semibold text-red-500 hover:text-red-600"
+                  >
+                    Hapus
+                  </button>
+                </div>
+              </div>
+            ))}
+            {!pembayaran.length && (
+              <div className="rounded-2xl border border-dashed border-black/10 px-4 py-6 text-sm text-[color:var(--muted)]">
+                Belum ada pembayaran. Tambahkan transaksi pertama.
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
     </div>
   );
 }
