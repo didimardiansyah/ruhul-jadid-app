@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
@@ -20,6 +21,9 @@ export default function Pembayaran() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  const [session, setSession] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [authLoading, setAuthLoading] = useState(true);
 
   const loadAnggota = async () => {
     const { data } = await supabase.from("anggota").select("*").order("nama");
@@ -37,6 +41,60 @@ export default function Pembayaran() {
     setPembayaran(data || []);
   };
 
+  const ensureProfile = async (userId) => {
+    await supabase.from("profiles").upsert({ id: userId });
+  };
+
+  const checkAdmin = async (userId) => {
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("is_admin")
+      .eq("id", userId)
+      .single();
+
+    if (error) return false;
+    return Boolean(data?.is_admin);
+  };
+
+  useEffect(() => {
+    let active = true;
+
+    const initAuth = async () => {
+      const { data } = await supabase.auth.getSession();
+      if (!active) return;
+      setSession(data.session || null);
+      if (data.session?.user?.id) {
+        await ensureProfile(data.session.user.id);
+        const adminValue = await checkAdmin(data.session.user.id);
+        if (!active) return;
+        setIsAdmin(adminValue);
+      } else {
+        setIsAdmin(false);
+      }
+      setAuthLoading(false);
+    };
+
+    initAuth();
+
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      async (_event, nextSession) => {
+        setSession(nextSession);
+        if (nextSession?.user?.id) {
+          await ensureProfile(nextSession.user.id);
+          const adminValue = await checkAdmin(nextSession.user.id);
+          setIsAdmin(adminValue);
+        } else {
+          setIsAdmin(false);
+        }
+      }
+    );
+
+    return () => {
+      active = false;
+      listener?.subscription?.unsubscribe();
+    };
+  }, []);
+
   useEffect(() => {
     const load = async () => {
       setLoading(true);
@@ -48,6 +106,11 @@ export default function Pembayaran() {
 
   const tambah = async () => {
     setErrorMsg("");
+    if (!isAdmin) {
+      setErrorMsg("Hanya admin yang bisa menambah pembayaran.");
+      return;
+    }
+
     const nominalValue = Number(nominal);
     if (!anggotaId) {
       setErrorMsg("Pilih anggota terlebih dahulu.");
@@ -76,7 +139,17 @@ export default function Pembayaran() {
     ]);
 
     if (error) {
-      setErrorMsg(error.message || "Gagal menyimpan pembayaran.");
+      if (
+        error.message
+          ?.toLowerCase()
+          .includes("row-level security")
+      ) {
+        setErrorMsg(
+          "Akses ditolak. Login sebagai admin di /admin untuk menambah pembayaran."
+        );
+      } else {
+        setErrorMsg(error.message || "Gagal menyimpan pembayaran.");
+      }
       setSaving(false);
       return;
     }
@@ -87,7 +160,25 @@ export default function Pembayaran() {
   };
 
   const hapus = async (id) => {
-    await supabase.from("pembayaran").delete().eq("id", id);
+    if (!isAdmin) {
+      setErrorMsg("Hanya admin yang bisa menghapus pembayaran.");
+      return;
+    }
+    const { error } = await supabase.from("pembayaran").delete().eq("id", id);
+    if (error) {
+      if (
+        error.message
+          ?.toLowerCase()
+          .includes("row-level security")
+      ) {
+        setErrorMsg(
+          "Akses ditolak. Login sebagai admin di /admin untuk menghapus pembayaran."
+        );
+      } else {
+        setErrorMsg(error.message || "Gagal menghapus pembayaran.");
+      }
+      return;
+    }
     loadPembayaran();
   };
 
@@ -126,6 +217,25 @@ export default function Pembayaran() {
             <p className="text-[color:var(--muted)] mt-2">
               Target iuran per orang: {formatRupiah(TARGET)}.
             </p>
+            <div className="mt-3">
+              {authLoading ? (
+                <span className="text-xs text-[color:var(--muted)]">
+                  Mengecek akses...
+                </span>
+              ) : isAdmin ? (
+                <span className="inline-flex items-center gap-2 rounded-full bg-emerald-100 text-emerald-700 text-xs font-semibold px-3 py-1">
+                  Admin aktif
+                </span>
+              ) : session ? (
+                <span className="inline-flex items-center gap-2 rounded-full bg-amber-100 text-amber-700 text-xs font-semibold px-3 py-1">
+                  Akses pengguna
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 text-slate-600 text-xs font-semibold px-3 py-1">
+                  Hanya Admin yang Bisa Mengubah Data
+                </span>
+              )}
+            </div>
           </div>
           <div className="rounded-2xl bg-[color:var(--surface)] border border-black/5 px-5 py-4 shadow-[0_20px_60px_-40px_rgba(0,0,0,0.45)]">
             <p className="text-sm text-[color:var(--muted)]">Total terkumpul</p>
@@ -136,46 +246,61 @@ export default function Pembayaran() {
         </header>
 
         <section className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr] mt-10">
-          <div className="rounded-[28px] bg-[color:var(--surface)] border border-black/5 p-6 shadow-[0_30px_80px_-60px_rgba(0,0,0,0.6)] fade-in-up delay-1">
-            <h2 className="text-xl font-semibold">Tambah Pembayaran</h2>
-            <p className="text-sm text-[color:var(--muted)] mt-2">
-              Simpan transaksi baru agar status iuran selalu terbaru.
-            </p>
+          {isAdmin ? (
+            <div className="rounded-[28px] bg-[color:var(--surface)] border border-black/5 p-6 shadow-[0_30px_80px_-60px_rgba(0,0,0,0.6)] fade-in-up delay-1">
+              <h2 className="text-xl font-semibold">Tambah Pembayaran</h2>
+              <p className="text-sm text-[color:var(--muted)] mt-2">
+                Simpan transaksi baru agar status iuran selalu terbaru.
+              </p>
 
-            <div className="mt-5 space-y-4">
-              <select
-                value={anggotaId}
-                onChange={(e) => setAnggotaId(e.target.value)}
-                className="w-full rounded-2xl border border-black/10 bg-white/80 px-4 py-3 outline-none focus:border-[color:var(--accent)]"
-              >
-                <option value="">Pilih Anggota</option>
-                {anggota.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.nama}
-                  </option>
-                ))}
-              </select>
+              <div className="mt-5 space-y-4">
+                <select
+                  value={anggotaId}
+                  onChange={(e) => setAnggotaId(e.target.value)}
+                  className="w-full rounded-2xl border border-black/10 bg-white/80 px-4 py-3 outline-none focus:border-[color:var(--accent)]"
+                >
+                  <option value="">Pilih Anggota</option>
+                  {anggota.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.nama}
+                    </option>
+                  ))}
+                </select>
 
-              <input
-                type="number"
-                placeholder="Nominal"
-                value={nominal}
-                onChange={(e) => setNominal(e.target.value)}
-                className="w-full rounded-2xl border border-black/10 bg-white/80 px-4 py-3 outline-none focus:border-[color:var(--accent)]"
-              />
+                <input
+                  type="number"
+                  placeholder="Nominal"
+                  value={nominal}
+                  onChange={(e) => setNominal(e.target.value)}
+                  className="w-full rounded-2xl border border-black/10 bg-white/80 px-4 py-3 outline-none focus:border-[color:var(--accent)]"
+                />
 
-              <button
-                onClick={tambah}
-                disabled={saving}
-                className="w-full rounded-2xl bg-[color:var(--accent)] text-white py-3 font-semibold hover:bg-[color:var(--accent-strong)] transition"
-              >
-                {saving ? "Menyimpan..." : "Simpan Pembayaran"}
-              </button>
-              {errorMsg && (
-                <p className="text-sm text-red-600">{errorMsg}</p>
-              )}
+                <button
+                  onClick={tambah}
+                  disabled={saving}
+                  className="w-full rounded-2xl bg-[color:var(--accent)] text-white py-3 font-semibold hover:bg-[color:var(--accent-strong)] transition"
+                >
+                  {saving ? "Menyimpan..." : "Simpan Pembayaran"}
+                </button>
+                {errorMsg && (
+                  <p className="text-sm text-red-600">{errorMsg}</p>
+                )}
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="rounded-[28px] bg-[color:var(--surface)] border border-black/5 p-6 shadow-[0_30px_80px_-60px_rgba(0,0,0,0.6)] fade-in-up delay-1">
+              <h2 className="text-xl font-semibold">Akses Terkunci</h2>
+              <p className="text-sm text-[color:var(--muted)] mt-2">
+                Hanya admin yang bisa menambah atau menghapus pembayaran.
+              </p>
+              <Link
+                href="/admin"
+                className="inline-flex mt-5 text-sm font-semibold text-[color:var(--accent-strong)]"
+              >
+                Login sebagai admin
+              </Link>
+            </div>
+          )}
 
           <div className="rounded-[28px] bg-white/80 border border-black/5 p-6 shadow-[0_30px_80px_-60px_rgba(0,0,0,0.6)] fade-in-up delay-2">
             <h2 className="text-xl font-semibold">Status Iuran</h2>
@@ -230,6 +355,12 @@ export default function Pembayaran() {
             </span>
           </div>
 
+          {errorMsg && !isAdmin && (
+            <p className="text-sm text-amber-700 mt-4">
+              {errorMsg}
+            </p>
+          )}
+
           <div className="mt-5 grid gap-3">
             {pembayaran.map((p) => (
               <div
@@ -242,12 +373,14 @@ export default function Pembayaran() {
                 </div>
                 <div className="flex items-center gap-4">
                   <span className="font-semibold">{formatRupiah(p.nominal)}</span>
-                  <button
-                    onClick={() => hapus(p.id)}
-                    className="text-xs font-semibold text-red-500 hover:text-red-600"
-                  >
-                    Hapus
-                  </button>
+                  {isAdmin && (
+                    <button
+                      onClick={() => hapus(p.id)}
+                      className="text-xs font-semibold text-red-500 hover:text-red-600"
+                    >
+                      Hapus
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
