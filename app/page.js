@@ -30,22 +30,83 @@ export default function Home() {
   const [anggota, setAnggota] = useState([]);
   const [jadwal, setJadwal] = useState([]);
   const [pembayaran, setPembayaran] = useState([]);
+  const [pengeluaran, setPengeluaran] = useState([]);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [authLoading, setAuthLoading] = useState(true);
   const [loading, setLoading] = useState(true);
+
+  const ensureProfile = async (userId) => {
+    await supabase.from("profiles").upsert({ id: userId });
+  };
+
+  const checkAdmin = async (userId) => {
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("is_admin")
+      .eq("id", userId)
+      .single();
+
+    if (error) return false;
+    return Boolean(data?.is_admin);
+  };
+
+  useEffect(() => {
+    let active = true;
+
+    const initAuth = async () => {
+      const { data } = await supabase.auth.getSession();
+      if (!active) return;
+      if (data.session?.user?.id) {
+        await ensureProfile(data.session.user.id);
+        const adminValue = await checkAdmin(data.session.user.id);
+        if (!active) return;
+        setIsAdmin(adminValue);
+      } else {
+        setIsAdmin(false);
+      }
+      setAuthLoading(false);
+    };
+
+    initAuth();
+
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      async (_event, nextSession) => {
+        if (nextSession?.user?.id) {
+          await ensureProfile(nextSession.user.id);
+          const adminValue = await checkAdmin(nextSession.user.id);
+          setIsAdmin(adminValue);
+        } else {
+          setIsAdmin(false);
+        }
+      }
+    );
+
+    return () => {
+      active = false;
+      listener?.subscription?.unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     const load = async () => {
       setLoading(true);
-      const [anggotaRes, jadwalRes, pembayaranRes] = await Promise.all([
-        supabase.from("anggota").select("*").order("nama"),
-        supabase.from("jadwal").select("*").order("minggu"),
-        supabase
-          .from("pembayaran")
-          .select("id, nominal, anggota_id, anggota:anggota_id (id, nama)"),
-      ]);
+      const [anggotaRes, jadwalRes, pembayaranRes, pengeluaranRes] =
+        await Promise.all([
+          supabase.from("anggota").select("*").order("nama"),
+          supabase.from("jadwal").select("*").order("minggu"),
+          supabase
+            .from("pembayaran")
+            .select("id, nominal, anggota_id, anggota:anggota_id (id, nama)"),
+          supabase
+            .from("pengeluaran")
+            .select("id, nominal, keterangan, created_at")
+            .order("id", { ascending: false }),
+        ]);
 
       setAnggota(anggotaRes.data || []);
       setJadwal(jadwalRes.data || []);
       setPembayaran(pembayaranRes.data || []);
+      setPengeluaran(pengeluaranRes.data || []);
       setLoading(false);
     };
 
@@ -82,15 +143,20 @@ export default function Home() {
       (sum, item) => sum + Number(item.nominal || 0),
       0
     );
+    const totalKeluar = pengeluaran.reduce(
+      (sum, item) => sum + Number(item.nominal || 0),
+      0
+    );
     const totalTarget = totalPenghuni * TARGET;
     const belumLunas = totalPerOrang.filter((item) => item.total < TARGET).length;
     return {
       totalPenghuni,
       totalTerkumpul,
+      totalKeluar,
       totalTarget,
       belumLunas,
     };
-  }, [anggota, pembayaran, totalPerOrang]);
+  }, [anggota, pembayaran, pengeluaran, totalPerOrang]);
 
   const displayMembers = useMemo(() => {
     const filled = [...totalPerOrang];
@@ -146,7 +212,7 @@ export default function Home() {
           </div>
         </header>
 
-        <section className="grid gap-4 md:grid-cols-4 mt-10 fade-in-up delay-1">
+        <section className="grid gap-4 md:grid-cols-5 mt-10 fade-in-up delay-1">
           {[
             {
               label: "Total penghuni",
@@ -154,11 +220,23 @@ export default function Home() {
             },
             {
               label: "Iuran terkumpul",
-              value: loading ? "Memuat" : formatRupiah(summary.totalTerkumpul),
+              value: loading
+                ? "Memuat"
+                : `${formatRupiah(summary.totalTerkumpul)} dari ${formatRupiah(
+                    summary.totalTarget
+                  )}`,
             },
             {
-              label: "Target bulan Februari",
-              value: loading ? "Memuat" : formatRupiah(summary.totalTarget),
+              label: "Pengeluaran",
+              value: loading ? "Memuat" : formatRupiah(summary.totalKeluar),
+            },
+            {
+              label: "Total kas saat ini",
+              value: loading
+                ? "Memuat"
+                : formatRupiah(
+                    Math.max(summary.totalTerkumpul - summary.totalKeluar, 0)
+                  ),
             },
             {
               label: "Belum lunas",
@@ -172,7 +250,15 @@ export default function Home() {
               <p className="text-sm uppercase tracking-[0.2em] text-[color:var(--muted)]">
                 {item.label}
               </p>
-              <h2 className="text-2xl font-semibold mt-3">{item.value}</h2>
+              <h2
+                className={`font-semibold mt-3 ${
+                  item.label === "Iuran terkumpul"
+                    ? "text-xl text-[color:var(--accent-strong)]"
+                    : "text-2xl"
+                }`}
+              >
+                {item.value}
+              </h2>
             </div>
           ))}
         </section>
@@ -306,6 +392,87 @@ export default function Home() {
               >
                 Kelola jadwal piket
               </Link>
+            </div>
+
+            <div className="rounded-[28px] bg-[color:var(--surface)] border border-black/5 p-6 shadow-[0_30px_80px_-60px_rgba(0,0,0,0.6)]">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-xl font-semibold">Pengeluaran Kas</h3>
+                  <p className="text-sm text-[color:var(--muted)] mt-2">
+                    Ringkasan transaksi keluar untuk kebutuhan kos.
+                  </p>
+                </div>
+                <span className="text-sm text-[color:var(--muted)]">
+                  {loading ? "Memuat" : `${pengeluaran.length} transaksi`}
+                </span>
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                {authLoading ? (
+                  <span className="text-xs text-[color:var(--muted)]">
+                    Mengecek akses...
+                  </span>
+                ) : isAdmin ? (
+                  <>
+                    <span className="inline-flex items-center gap-2 rounded-full bg-emerald-100 text-emerald-700 text-xs font-semibold px-3 py-1">
+                      Admin aktif
+                    </span>
+                    <Link
+                      href="/pembayaran"
+                      className="inline-flex text-xs font-semibold text-[color:var(--accent-strong)]"
+                    >
+                      Kelola pengeluaran
+                    </Link>
+                  </>
+                ) : (
+                  <>
+                    <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 text-slate-600 text-xs font-semibold px-3 py-1">
+                      Hanya admin yang bisa mengubah
+                    </span>
+                    <Link
+                      href="/admin"
+                      className="inline-flex text-xs font-semibold text-[color:var(--accent-strong)]"
+                    >
+                      Login admin
+                    </Link>
+                  </>
+                )}
+              </div>
+
+              <div className="mt-4 rounded-2xl bg-white/80 border border-black/5 px-4 py-3">
+                <p className="text-xs uppercase tracking-[0.2em] text-[color:var(--muted)]">
+                  Total pengeluaran
+                </p>
+                <p className="text-2xl font-semibold mt-2">
+                  {loading ? "Memuat" : formatRupiah(summary.totalKeluar)}
+                </p>
+              </div>
+
+              <div className="mt-4 grid gap-3">
+                {(pengeluaran.length ? pengeluaran.slice(0, 4) : []).map(
+                  (item) => (
+                    <div
+                      key={item.id}
+                      className="flex items-center justify-between rounded-2xl border border-black/5 bg-white/90 px-4 py-3"
+                    >
+                      <div>
+                        <p className="font-semibold">{item.keterangan}</p>
+                        <p className="text-xs text-[color:var(--muted)]">
+                          Pengeluaran kas
+                        </p>
+                      </div>
+                      <span className="font-semibold">
+                        {formatRupiah(item.nominal)}
+                      </span>
+                    </div>
+                  )
+                )}
+                {!pengeluaran.length && (
+                  <div className="rounded-2xl border border-dashed border-black/10 px-4 py-6 text-sm text-[color:var(--muted)]">
+                    Belum ada pengeluaran. Tambahkan transaksi pertama.
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="rounded-[28px] bg-[color:var(--surface)] border border-black/5 p-6 shadow-[0_30px_80px_-60px_rgba(0,0,0,0.6)]">
